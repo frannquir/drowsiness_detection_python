@@ -19,11 +19,15 @@ except ImportError:
 class CameraViewer:
     def __init__(self, root):
         self.root = root
-        self.root.title("Camera Viewer - Face Detection")
+        self.root.title("Drowsiness Detector")
+        self.root.configure(bg='#1a1a2e')
+        self.root.geometry("800x600")
+        self.root.minsize(640, 480)
 
         self.camera = None
         self.current_camera_index = 0
         self.is_running = True
+        self.started = False  # Track if monitoring has started
 
         # Initialize MediaPipe Face Landmarker
         base_options = python.BaseOptions(model_asset_path='face_landmarker.task')
@@ -45,7 +49,7 @@ class CameraViewer:
         # Yawn detection variables (simplified - MAR only)
         self.YAWN_START_THRESHOLD = 0.35  # Lowered from 0.45
         self.YAWN_END_THRESHOLD = 0.25  # Lowered from 0.35
-        self.YAWN_MIN_FRAMES = 10  # Increased to require mouth open longer
+        self.YAWN_MIN_FRAMES = 5  # Balanced - enough to wake someone up
         self.yawn_counter = 0
         self.yawn_frames = 0
         self.is_yawning = False
@@ -140,13 +144,46 @@ class CameraViewer:
         return available
 
     def create_ui(self):
-        """Create minimal UI with camera selector"""
-        # Control panel
-        control_frame = tk.Frame(self.root)
-        control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
+        """Create beautiful UI with start screen"""
+        # Main container
+        self.main_container = tk.Frame(self.root, bg='#1a1a2e')
+        self.main_container.pack(expand=True, fill=tk.BOTH)
+
+        # Start screen
+        self.start_frame = tk.Frame(self.main_container, bg='#1a1a2e')
+        self.start_frame.pack(expand=True, fill=tk.BOTH)
+
+        # Title
+        title_label = tk.Label(
+            self.start_frame,
+            text="DROWSINESS DETECTOR",
+            font=("Helvetica", 36, "bold"),
+            fg='#00d4ff',
+            bg='#1a1a2e'
+        )
+        title_label.pack(pady=(100, 20))
+
+        # Subtitle
+        subtitle_label = tk.Label(
+            self.start_frame,
+            text="Real-time driver fatigue monitoring system",
+            font=("Helvetica", 14),
+            fg='#a8b2d1',
+            bg='#1a1a2e'
+        )
+        subtitle_label.pack(pady=(0, 50))
 
         # Camera selector
-        tk.Label(control_frame, text="Camera:").pack(side=tk.LEFT, padx=5)
+        camera_frame = tk.Frame(self.start_frame, bg='#1a1a2e')
+        camera_frame.pack(pady=20)
+
+        tk.Label(
+            camera_frame,
+            text="Select Camera:",
+            font=("Helvetica", 12),
+            fg='#a8b2d1',
+            bg='#1a1a2e'
+        ).pack(side=tk.LEFT, padx=10)
 
         self.camera_var = tk.StringVar()
         camera_options = [f"Camera {i}" for i in self.available_cameras]
@@ -155,18 +192,55 @@ class CameraViewer:
             self.camera_var.set(camera_options[0])
 
         camera_dropdown = ttk.Combobox(
-            control_frame,
+            camera_frame,
             textvariable=self.camera_var,
             values=camera_options,
             state="readonly",
-            width=15
+            width=15,
+            font=("Helvetica", 11)
         )
-        camera_dropdown.pack(side=tk.LEFT, padx=5)
+        camera_dropdown.pack(side=tk.LEFT, padx=10)
         camera_dropdown.bind("<<ComboboxSelected>>", self.on_camera_change)
 
-        # Video display
-        self.video_label = tk.Label(self.root)
+        # Start button
+        self.start_button = tk.Button(
+            self.start_frame,
+            text="START MONITORING",
+            font=("Helvetica", 16, "bold"),
+            fg='#ffffff',
+            bg='#00d4ff',
+            activebackground='#00a8cc',
+            activeforeground='#ffffff',
+            relief=tk.FLAT,
+            padx=40,
+            pady=15,
+            cursor="hand2",
+            command=self.start_monitoring
+        )
+        self.start_button.pack(pady=30)
+
+        # Footer info
+        footer_frame = tk.Frame(self.start_frame, bg='#1a1a2e')
+        footer_frame.pack(side=tk.BOTTOM, pady=20)
+
+        tk.Label(
+            footer_frame,
+            text="Monitors eye closure, yawning, and head nods",
+            font=("Helvetica", 10),
+            fg='#6c7a89',
+            bg='#1a1a2e'
+        ).pack()
+
+        # Video display frame (hidden initially)
+        self.video_frame = tk.Frame(self.main_container, bg='#1a1a2e')
+        self.video_label = tk.Label(self.video_frame, bg='#1a1a2e')
         self.video_label.pack(expand=True, fill=tk.BOTH)
+
+    def start_monitoring(self):
+        """Start the monitoring system"""
+        self.started = True
+        self.start_frame.pack_forget()
+        self.video_frame.pack(expand=True, fill=tk.BOTH)
 
     def start_camera(self, camera_index):
         """Start camera capture"""
@@ -271,7 +345,7 @@ class CameraViewer:
 
     def update_frame(self):
         """Update video frame"""
-        if self.is_running and self.camera is not None and self.camera.isOpened():
+        if self.is_running and self.started and self.camera is not None and self.camera.isOpened():
             ret, frame = self.camera.read()
 
             if ret:
@@ -440,7 +514,7 @@ class CameraViewer:
                                     # Activate nod alarm
                                     self.nod_alarm_active = True
                                     self.nod_alarm_level = 0
-                                    self.nod_next_beep_time = now + 5.0  # Start checking in 5s
+                                    self.nod_next_beep_time = now + 3.0  # First beep in 3s
                                     self.nod_last_escalation = now
                                     self.nod_awake_since = None
                                 elif dip_duration > 1.5:
@@ -568,49 +642,101 @@ class CameraViewer:
                                         # Single beep
                                         self.play_beep_async(1000, 400)
 
-                                    # Calculate interval (gets faster with level)
+                                    # Calculate interval: 4s → 3.5s → 3s → 2.5s → 2s → 1.5s
                                     interval = max(self.ALARM_MIN_INTERVAL,
-                                                  6.0 - self.nod_alarm_level * 0.8)
+                                                  4.0 - self.nod_alarm_level * 0.5)
                                     self.nod_next_beep_time = now + interval
 
-                        # Display metrics with yawn debug info
-                        cv2.putText(frame, f"EAR: {avg_ear:.2f}", (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-                        yawn_color = (0, 255, 255) if yawn_active else (0, 255, 0)
-                        cv2.putText(frame, f"MAR: {mar:.2f} [{self.yawn_frames}/10]", (10, 60),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, yawn_color, 2)
+                        # Enhanced overlay rendering
+                        h, w, _ = frame.shape
 
-                        # Display counters
-                        cv2.putText(frame, f"Blinks: {self.blink_counter}", (10, 90),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                        cv2.putText(frame, f"Yawns: {self.yawn_counter}", (10, 120),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
-                        cv2.putText(frame, f"Nods: {self.nod_counter}", (10, 150),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 0), 2)
+                        # Header bar
+                        header_overlay = frame.copy()
+                        cv2.rectangle(header_overlay, (0, 0), (w, 60), (26, 26, 46), -1)
+                        cv2.addWeighted(header_overlay, 0.85, frame, 0.15, 0, frame)
 
-                        # Display status
+                        cv2.putText(frame, "DROWSINESS DETECTOR", (20, 35),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 212, 255), 2)
+
+                        # Status indicator (top-right)
+                        status_color = (0, 255, 0) if not self.alarm_active else (0, 0, 255)
+                        cv2.circle(frame, (w - 30, 30), 8, status_color, -1)
+                        cv2.circle(frame, (w - 30, 30), 8, (255, 255, 255), 1)
+                        status_text = "ACTIVE" if not self.alarm_active else "ALERT"
+                        cv2.putText(frame, status_text, (w - 120, 35),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 2)
+
+                        # Create semi-transparent overlay
+                        overlay = frame.copy()
+
+                        # Metrics panel (top-left, below header)
+                        cv2.rectangle(overlay, (10, 70), (250, 240), (26, 26, 46), -1)
+                        cv2.addWeighted(overlay, 0.7, frame, 0.3, 0, frame)
+
+                        # Draw metrics with icons
+                        cv2.putText(frame, "METRICS", (20, 95),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 212, 255), 2)
+                        cv2.line(frame, (20, 100), (240, 100), (0, 212, 255), 1)
+
+                        cv2.putText(frame, f"EYE: {avg_ear:.2f}", (20, 125),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (100, 255, 100), 2)
+                        yawn_color = (0, 255, 255) if yawn_active else (100, 255, 100)
+                        cv2.putText(frame, f"MOUTH: {mar:.2f}", (20, 150),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, yawn_color, 2)
+
+                        cv2.putText(frame, f"Blinks: {self.blink_counter}", (20, 180),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 2)
+                        cv2.putText(frame, f"Yawns: {self.yawn_counter}", (20, 205),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 2)
+                        cv2.putText(frame, f"Nods: {self.nod_counter}", (20, 230),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 200, 100), 2)
+
+                        # Status alerts (center-top, below header)
+                        alert_y = 90
                         if blink_detected:
-                            cv2.putText(frame, "BLINK!", (10, 190),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 3)
+                            alert_overlay = frame.copy()
+                            cv2.rectangle(alert_overlay, (w//2 - 100, alert_y - 25),
+                                         (w//2 + 100, alert_y + 10), (0, 100, 255), -1)
+                            cv2.addWeighted(alert_overlay, 0.6, frame, 0.4, 0, frame)
+                            cv2.putText(frame, "BLINK", (w//2 - 50, alert_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                            alert_y += 50
 
                         if yawn_detected:
-                            cv2.putText(frame, "YAWN!", (10, 230),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 165, 255), 3)
+                            alert_overlay = frame.copy()
+                            cv2.rectangle(alert_overlay, (w//2 - 100, alert_y - 25),
+                                         (w//2 + 100, alert_y + 10), (0, 165, 255), -1)
+                            cv2.addWeighted(alert_overlay, 0.6, frame, 0.4, 0, frame)
+                            cv2.putText(frame, "YAWN", (w//2 - 50, alert_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+                            alert_y += 50
 
-                        # Display nod flash
                         if now < self.nod_flash_until:
-                            cv2.putText(frame, "NOD!", (10, 270),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 3)
+                            alert_overlay = frame.copy()
+                            cv2.rectangle(alert_overlay, (w//2 - 100, alert_y - 25),
+                                         (w//2 + 100, alert_y + 10), (200, 0, 255), -1)
+                            cv2.addWeighted(alert_overlay, 0.6, frame, 0.4, 0, frame)
+                            cv2.putText(frame, "NOD", (w//2 - 40, alert_y),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
 
-                        # Display WARNING when eyes closed >= 3 seconds
+                        # Warning panel (center)
                         if self.warning_active:
-                            cv2.putText(frame, "WARNING!", (10, 310),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 255), 4)
+                            warn_overlay = frame.copy()
+                            cv2.rectangle(warn_overlay, (w//2 - 150, h//2 - 50),
+                                         (w//2 + 150, h//2 + 50), (0, 0, 255), -1)
+                            cv2.addWeighted(warn_overlay, 0.7, frame, 0.3, 0, frame)
+                            cv2.putText(frame, "WARNING!", (w//2 - 120, h//2 + 15),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 3)
 
-                        # Display DROWSY alert if active
+                        # Drowsy alert (full-width banner)
                         if now < self.drowsy_until:
-                            cv2.putText(frame, "DROWSY!", (10, 360),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 1.4, (0, 0, 255), 4)
+                            drowsy_overlay = frame.copy()
+                            cv2.rectangle(drowsy_overlay, (0, h - 100), (w, h), (0, 0, 180), -1)
+                            cv2.addWeighted(drowsy_overlay, 0.8, frame, 0.2, 0, frame)
+                            cv2.putText(frame, "DROWSINESS DETECTED!", (w//2 - 250, h - 50),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 4)
+                            cv2.putText(frame, "Please take a break", (w//2 - 150, h - 20),
+                                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (200, 200, 200), 2)
 
                 else:
                     # Handle face tracking loss gracefully
@@ -662,7 +788,7 @@ class CameraViewer:
                                 self.play_beep_async(1000, 400)
 
                             interval = max(self.ALARM_MIN_INTERVAL,
-                                          6.0 - self.nod_alarm_level * 0.8)
+                                          4.0 - self.nod_alarm_level * 0.5)
                             self.nod_next_beep_time = now + interval
 
                     # Nod detection during face loss
@@ -684,7 +810,7 @@ class CameraViewer:
                                     # Activate nod alarm
                                     self.nod_alarm_active = True
                                     self.nod_alarm_level = 0
-                                    self.nod_next_beep_time = now + 5.0  # Start checking in 5s
+                                    self.nod_next_beep_time = now + 3.0  # First beep in 3s
                                     self.nod_last_escalation = now
                                     self.nod_awake_since = None
                         else:
