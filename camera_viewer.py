@@ -95,15 +95,16 @@ class CameraViewer:
 
         # Drowsiness detection state (WARNING-based only)
         self.warn_times = deque()
+        self.nod_times = deque()  # Track nod timestamps for double-nod detection
         self.drowsy_until = 0.0
         self.long_close_triggered = False
 
         # Alarm escalation system (wake-up alarm style)
         self.STABLE_AWAKE_SEC = 2.0
-        self.ALARM_START_INTERVAL = 8.0  # Start at 8s instead of 10s
-        self.ALARM_MIN_INTERVAL = 1.5  # Minimum 1.5s instead of 2.5s
-        self.ALARM_ACCEL_EVERY = 3.0  # Escalate every 3s instead of 8s
-        self.ALARM_LEVEL_MAX = 8  # More levels for gradual escalation
+        self.ALARM_START_INTERVAL = 3.0  # Start at 3s for aggressive wake-up
+        self.ALARM_MIN_INTERVAL = 0.5  # Minimum 0.5s for maximum urgency
+        self.ALARM_ACCEL_EVERY = 2.0  # Escalate every 2s for faster progression
+        self.ALARM_LEVEL_MAX = 10  # More levels for gradual escalation
         self.alarm_active = False
         self.alarm_level = 0
         self.next_alarm_time = 0.0
@@ -452,6 +453,22 @@ class CameraViewer:
                                     # Register warning event only once per closure
                                     self.warn_times.append(now)
                                     self.warning_event_fired = True
+                                    # Play double beep for warning
+                                    self.play_beep_async(1400, 250)
+                                    threading.Timer(0.3, lambda: self.play_beep_async(1400, 250)).start()
+
+                                    # Prune old warnings and check if this is the second warning in 60s
+                                    self.prune_deque(self.warn_times, now, self.WARN_WINDOW_SHORT)
+                                    warn_60 = sum(1 for t in self.warn_times if (now - t) <= self.WARN_WINDOW_SHORT)
+
+                                    # Second warning in 60 seconds -> activate drowsy immediately
+                                    if warn_60 >= 2 and not self.alarm_active:
+                                        self.alarm_active = True
+                                        self.alarm_level = 0
+                                        self.next_alarm_time = now  # Beep immediately
+                                        self.awake_since = None
+                                        self.last_risky_time = now
+                                        self.drowsy_until = now + self.DROWSY_DISPLAY_SEC
                             else:
                                 self.warning_active = False
 
@@ -509,14 +526,32 @@ class CameraViewer:
                                     self.nod_cooldown_until = now + self.COOLDOWN
                                     self.nod_flash_until = now + 0.4
                                     self.pending_dip = False
-                                    # Play immediate wake-up beep on nod
-                                    self.play_beep_async(1000, 300)
-                                    # Activate nod alarm
-                                    self.nod_alarm_active = True
-                                    self.nod_alarm_level = 0
-                                    self.nod_next_beep_time = now + 3.0  # First beep in 3s
-                                    self.nod_last_escalation = now
-                                    self.nod_awake_since = None
+                                    # Play immediate triple beep on nod
+                                    self.play_beep_async(1000, 200)
+                                    threading.Timer(0.25, lambda: self.play_beep_async(1000, 200)).start()
+                                    threading.Timer(0.5, lambda: self.play_beep_async(1000, 200)).start()
+
+                                    # Track nod time for double-nod detection
+                                    self.nod_times.append(now)
+                                    self.prune_deque(self.nod_times, now, 15.0)  # Keep nods from last 15 seconds
+
+                                    # Check for double-nod (2 nods within 15 seconds) -> activate drowsy
+                                    if len(self.nod_times) >= 2:
+                                        # Activate alarm/drowsy state
+                                        self.alarm_active = True
+                                        self.alarm_level = 0
+                                        self.next_alarm_time = now  # Beep immediately
+                                        self.awake_since = None
+                                        self.last_risky_time = now
+                                        self.drowsy_until = now + self.DROWSY_DISPLAY_SEC
+                                        self.nod_times.clear()  # Clear nod tracking after activation
+                                    else:
+                                        # Single nod - activate nod alarm
+                                        self.nod_alarm_active = True
+                                        self.nod_alarm_level = 0
+                                        self.nod_next_beep_time = now + 3.0  # First beep in 3s
+                                        self.nod_last_escalation = now
+                                        self.nod_awake_since = None
                                 elif dip_duration > 1.5:
                                     # Reset if too long
                                     self.pending_dip = False
@@ -592,18 +627,23 @@ class CameraViewer:
                                 # Beep scheduler
                                 if now >= self.next_alarm_time:
                                     # Play beep (escalated pattern for higher levels)
-                                    if self.alarm_level >= 3:
+                                    if self.alarm_level >= 5:
+                                        # Triple beep for maximum urgency at high levels
+                                        self.play_beep_async(1200, 150)
+                                        threading.Timer(0.2, lambda: self.play_beep_async(1200, 150)).start()
+                                        threading.Timer(0.4, lambda: self.play_beep_async(1200, 150)).start()
+                                    elif self.alarm_level >= 2:
                                         # Double beep for urgency
                                         self.play_beep_async(1200, 200)
                                         threading.Timer(0.25, lambda: self.play_beep_async(1200, 200)).start()
                                     else:
-                                        # Single beep
-                                        self.play_beep_async(1200, 500)
+                                        # Single beep at start
+                                        self.play_beep_async(1200, 300)
 
                                     # Calculate next alarm interval (faster as level increases)
-                                    # More aggressive decrease: -1.0s per level instead of -1.5s per level
+                                    # Aggressive decrease: -0.4s per level for rapid escalation
                                     interval = max(self.ALARM_MIN_INTERVAL,
-                                                  self.ALARM_START_INTERVAL - self.alarm_level * 1.0)
+                                                  self.ALARM_START_INTERVAL - self.alarm_level * 0.4)
                                     self.next_alarm_time = now + interval
                                     self.drowsy_until = now + self.DROWSY_DISPLAY_SEC  # Keep showing DROWSY
 
@@ -758,14 +798,21 @@ class CameraViewer:
 
                         # Beep scheduler
                         if now >= self.next_alarm_time:
-                            if self.alarm_level >= 3:
+                            if self.alarm_level >= 5:
+                                # Triple beep for maximum urgency
+                                self.play_beep_async(1200, 150)
+                                threading.Timer(0.2, lambda: self.play_beep_async(1200, 150)).start()
+                                threading.Timer(0.4, lambda: self.play_beep_async(1200, 150)).start()
+                            elif self.alarm_level >= 2:
+                                # Double beep
                                 self.play_beep_async(1200, 200)
                                 threading.Timer(0.25, lambda: self.play_beep_async(1200, 200)).start()
                             else:
-                                self.play_beep_async(1200, 500)
+                                # Single beep
+                                self.play_beep_async(1200, 300)
 
                             interval = max(self.ALARM_MIN_INTERVAL,
-                                          self.ALARM_START_INTERVAL - self.alarm_level * 1.0)
+                                          self.ALARM_START_INTERVAL - self.alarm_level * 0.4)
                             self.next_alarm_time = now + interval
                             self.drowsy_until = now + self.DROWSY_DISPLAY_SEC
 
@@ -805,14 +852,32 @@ class CameraViewer:
                                     self.nod_cooldown_until = now + self.COOLDOWN
                                     self.nod_flash_until = now + 0.4
                                     self.pending_dip = False
-                                    # Play immediate wake-up beep on nod
-                                    self.play_beep_async(1000, 300)
-                                    # Activate nod alarm
-                                    self.nod_alarm_active = True
-                                    self.nod_alarm_level = 0
-                                    self.nod_next_beep_time = now + 3.0  # First beep in 3s
-                                    self.nod_last_escalation = now
-                                    self.nod_awake_since = None
+                                    # Play immediate triple beep on nod
+                                    self.play_beep_async(1000, 200)
+                                    threading.Timer(0.25, lambda: self.play_beep_async(1000, 200)).start()
+                                    threading.Timer(0.5, lambda: self.play_beep_async(1000, 200)).start()
+
+                                    # Track nod time for double-nod detection
+                                    self.nod_times.append(now)
+                                    self.prune_deque(self.nod_times, now, 15.0)  # Keep nods from last 15 seconds
+
+                                    # Check for double-nod (2 nods within 15 seconds) -> activate drowsy
+                                    if len(self.nod_times) >= 2:
+                                        # Activate alarm/drowsy state
+                                        self.alarm_active = True
+                                        self.alarm_level = 0
+                                        self.next_alarm_time = now  # Beep immediately
+                                        self.awake_since = None
+                                        self.last_risky_time = now
+                                        self.drowsy_until = now + self.DROWSY_DISPLAY_SEC
+                                        self.nod_times.clear()  # Clear nod tracking after activation
+                                    else:
+                                        # Single nod - activate nod alarm
+                                        self.nod_alarm_active = True
+                                        self.nod_alarm_level = 0
+                                        self.nod_next_beep_time = now + 3.0  # First beep in 3s
+                                        self.nod_last_escalation = now
+                                        self.nod_awake_since = None
                         else:
                             # Beyond grace period - reset pending dip
                             self.pending_dip = False
